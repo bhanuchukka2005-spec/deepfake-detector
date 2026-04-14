@@ -549,35 +549,23 @@
   }
 
   .arch-steps {
-    display: flex;
-    gap: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 12px;
     align-items: stretch;
-    overflow-x: auto;
   }
 
   .arch-step {
-    flex: 1;
-    min-width: 110px;
     background: var(--bg2);
     border: 1px solid var(--border);
-    border-radius: 0;
+    border-radius: 10px;
     padding: 1rem 0.75rem;
     text-align: center;
     position: relative;
   }
 
-  .arch-step:first-child { border-radius: 10px 0 0 10px; }
-  .arch-step:last-child { border-radius: 0 10px 10px 0; }
-
   .arch-step:not(:last-child)::after {
-    content: '→';
-    position: absolute;
-    right: -12px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--muted);
-    font-size: 0.9rem;
-    z-index: 1;
+    display: none;
   }
 
   .arch-step-icon {
@@ -717,7 +705,6 @@
     </button>
   </div>
 
-  <!-- Architecture -->
   <div class="arch-section">
     <div class="arch-title">How It Works</div>
     <div class="arch-steps">
@@ -744,7 +731,7 @@
       <div class="arch-step">
         <div class="arch-step-icon">🔥</div>
         <div class="arch-step-name">Heatmap</div>
-        <div class="arch-step-label">Probability overlay
+        <div class="arch-step-label">Probability overlay</div>
       </div>
       <div class="arch-step">
         <div class="arch-step-icon">📊</div>
