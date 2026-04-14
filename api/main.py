@@ -1,13 +1,23 @@
+"""
+FastAPI Backend — DeepFake Detector
+Routes:
+  GET  /health           health check
+  POST /analyze/image    analyze image file
+  POST /analyze/video    analyze video file
+  GET  /results/{id}     get cached result
+"""
+
+import os, sys, uuid, time, random, cv2, datetime
+import numpy as np
+from pathlib import Path
+from typing import Optional, List
+
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Optional, List
-import os, uuid, time, random, cv2, numpy as np
-from pathlib import Path
-import sys
 
-# ── App Setup (MUST come before routes) ───────────────────────────────────────
+# ── FastAPI app (must be created before anything else) ────────────────────────
 app = FastAPI(
     title="DeepFake Detector API",
     description="AI-powered face-swap deepfake detection",
@@ -17,12 +27,22 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Load Model ────────────────────────────────────────────────────────────────
-sys.path.append(str(Path(__file__).parent.parent / 'model'))
+# ── Directories ───────────────────────────────────────────────────────────────
+BASE_DIR = Path(__file__).parent.parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+RESULTS_DIR = BASE_DIR / "results"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+app.mount("/results_static", StaticFiles(directory=str(RESULTS_DIR)), name="results")
+
+# ── Load model (after app is created so routes still register on failure) ─────
+sys.path.insert(0, str(BASE_DIR / "model"))
 analyzer = None
 
 try:
@@ -30,26 +50,19 @@ try:
     analyzer = FaceSwapAnalyzer()
     print("[API] Model ready.")
 except Exception as e:
-    print(f"[API ERROR] Could not load model: {e}")
     import traceback
+    print(f"[API ERROR] Model failed to load: {e}")
     traceback.print_exc()
+    print("[API] Server will start but /analyze endpoints will return 503.")
 
-# ── Directories ───────────────────────────────────────────────────────────────
-UPLOAD_DIR = Path("./uploads")
-RESULTS_DIR = Path("./results")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-app.mount("/results_static", StaticFiles(directory=str(RESULTS_DIR)), name="results")
-
-MAX_FILE_SIZE_MB = 100
-ALLOWED_VIDEO_TYPES = {'video/mp4', 'video/avi', 'video/quicktime', 'video/x-matroska'}
-ALLOWED_IMAGE_TYPES = {'image/jpeg', 'image/png', 'image/webp'}
-
+# ── Constants ─────────────────────────────────────────────────────────────────
+MAX_MB = 100
+ALLOWED_IMAGE = {'image/jpeg', 'image/png', 'image/webp', 'image/jpg'}
+ALLOWED_VIDEO = {'video/mp4', 'video/avi', 'video/quicktime',
+                 'video/x-matroska', 'video/x-msvideo'}
 result_cache = {}
 
-
-# ── Pydantic Models ───────────────────────────────────────────────────────────
+# ── Pydantic schemas ──────────────────────────────────────────────────────────
 class FaceResult(BaseModel):
     bbox: List[int]
     label: str
@@ -73,40 +86,46 @@ class AnalysisResult(BaseModel):
     duration_seconds: Optional[float] = None
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def generate_explanation(verdict: str, confidence: float, fake_ratio: float = None) -> str:
+def explain(verdict: str, confidence: float) -> str:
     if verdict == 'FAKE':
         level = "Very high" if confidence > 0.9 else "Strong" if confidence > 0.7 else "Moderate"
-        artifacts = random.sample([
+        picked = random.sample([
             "unnatural blending around facial boundaries",
             "inconsistent lighting and skin texture",
             "temporal flickering in facial regions",
             "misaligned facial features",
-            "GAN-specific frequency artifacts"
+            "GAN-specific frequency artifacts in facial regions",
         ], 2)
-        return (f"{level} probability of manipulation detected. "
-                f"The model identified {artifacts[0]} and {artifacts[1]}. "
-                "Highlighted heatmap regions show where artifacts were found.")
-    elif verdict == 'REAL':
+        return (f"{level} probability of face-swap manipulation detected. "
+                f"The model identified {picked[0]} and {picked[1]}. "
+                "Red/yellow regions in the heatmap highlight where artifacts were found.")
+    if verdict == 'REAL':
         return (f"No significant manipulation artifacts detected (confidence: {confidence:.0%}). "
-                "Facial regions appear consistent with authentic footage. "
-                "Natural skin texture, consistent lighting, and stable facial boundaries observed.")
-    return "No face detected. Cannot perform deepfake analysis."
+                "Facial regions appear consistent with authentic footage — natural skin texture, "
+                "consistent lighting, and stable facial boundaries observed.")
+    return "No face detected in this media. Cannot perform deepfake analysis."
 
-def save_heatmap(heatmap_frame, analysis_id: str) -> Optional[str]:
-    if heatmap_frame is None:
+def save_heatmap(frame, analysis_id: str) -> Optional[str]:
+    if frame is None:
         return None
-    path = RESULTS_DIR / f"{analysis_id}_heatmap.jpg"
-    cv2.imwrite(str(path), heatmap_frame)
-    return f"/results_static/{analysis_id}_heatmap.jpg"
+    try:
+        path = RESULTS_DIR / f"{analysis_id}_heatmap.jpg"
+        cv2.imwrite(str(path), frame)
+        return f"/results_static/{analysis_id}_heatmap.jpg"
+    except Exception:
+        return None
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    return {"message": "DeepFake Detector API", "docs": "/docs", "model_loaded": analyzer is not None}
+    return {
+        "service": "DeepFake Detector API",
+        "model_loaded": analyzer is not None,
+        "docs": "/docs"
+    }
 
 @app.get("/health")
-def health_check():
-    import datetime
+def health():
     return {
         "status": "healthy",
         "model_loaded": analyzer is not None,
@@ -117,115 +136,118 @@ def health_check():
 @app.post("/analyze/image", response_model=AnalysisResult)
 async def analyze_image(file: UploadFile = File(...)):
     if analyzer is None:
-        raise HTTPException(503, "Model not loaded. Check server logs.")
-    if file.content_type not in ALLOWED_IMAGE_TYPES:
-        raise HTTPException(400, f"Unsupported type: {file.content_type}. Use JPG/PNG/WebP.")
+        raise HTTPException(503, detail="Model not loaded — check server terminal for errors.")
 
-    analysis_id = str(uuid.uuid4())[:8]
-    file_path = UPLOAD_DIR / f"{analysis_id}_{file.filename}"
+    ct = file.content_type or ""
+    if ct not in ALLOWED_IMAGE:
+        raise HTTPException(400, detail=f"Unsupported type '{ct}'. Send JPG, PNG, or WebP.")
+
+    aid = str(uuid.uuid4())[:8]
+    fpath = UPLOAD_DIR / f"{aid}_{file.filename}"
 
     try:
-        content = await file.read()
-        if len(content) > MAX_FILE_SIZE_MB * 1024 * 1024:
-            raise HTTPException(413, "File too large")
-        with open(file_path, 'wb') as f:
-            f.write(content)
+        data = await file.read()
+        if len(data) > MAX_MB * 1024 * 1024:
+            raise HTTPException(413, detail=f"File too large (max {MAX_MB}MB).")
+        fpath.write_bytes(data)
 
-        start = time.time()
-        result = analyzer.analyze_image(str(file_path))
-        elapsed_ms = (time.time() - start) * 1000
+        t0 = time.time()
+        result = analyzer.analyze_image(str(fpath))
+        ms = (time.time() - t0) * 1000
 
-        if 'error' in result:
-            raise HTTPException(500, result['error'])
+        if "error" in result:
+            raise HTTPException(500, detail=result["error"])
 
-        verdict = result.get('frame_verdict', 'UNKNOWN')
-        confidence = result.get('confidence', 0.0)
-        risk_score = confidence * 100 if verdict == 'FAKE' else (1 - confidence) * 100
+        verdict    = result.get("frame_verdict", "UNKNOWN")
+        confidence = result.get("confidence", 0.0)
+        risk       = confidence * 100 if verdict == "FAKE" else (1 - confidence) * 100
 
-        face_results = [
+        faces = [
             FaceResult(
-                bbox=list(f['bbox']),
-                label=f['label'],
-                fake_probability=f['fake_probability'],
-                real_probability=f['real_probability']
-            ) for f in result.get('faces', [])
+                bbox=list(f["bbox"]),
+                label=f["label"],
+                fake_probability=f["fake_probability"],
+                real_probability=f["real_probability"],
+            )
+            for f in result.get("faces", [])
         ]
 
-        heatmap_url = save_heatmap(result.get('heatmap_overlay'), analysis_id)
-
-        response = AnalysisResult(
-            analysis_id=analysis_id,
-            input_type='image',
+        resp = AnalysisResult(
+            analysis_id=aid,
+            input_type="image",
             final_verdict=verdict,
             confidence=confidence,
-            risk_score=round(risk_score, 1),
-            faces_detected=len(face_results),
-            processing_time_ms=round(elapsed_ms, 2),
-            explanation=generate_explanation(verdict, confidence),
-            heatmap_url=heatmap_url,
-            face_results=face_results
+            risk_score=round(risk, 1),
+            faces_detected=len(faces),
+            processing_time_ms=round(ms, 2),
+            explanation=explain(verdict, confidence),
+            heatmap_url=save_heatmap(result.get("heatmap_overlay"), aid),
+            face_results=faces,
         )
-        result_cache[analysis_id] = response.dict()
-        return response
+        result_cache[aid] = resp.dict()
+        return resp
+
     finally:
-        if file_path.exists():
-            os.remove(file_path)
+        if fpath.exists():
+            fpath.unlink()
 
 @app.post("/analyze/video", response_model=AnalysisResult)
 async def analyze_video(file: UploadFile = File(...), sample_rate: int = 10):
     if analyzer is None:
-        raise HTTPException(503, "Model not loaded. Check server logs.")
-    if file.content_type not in ALLOWED_VIDEO_TYPES:
-        raise HTTPException(400, f"Unsupported type: {file.content_type}. Use MP4/AVI/MOV.")
+        raise HTTPException(503, detail="Model not loaded — check server terminal for errors.")
 
-    analysis_id = str(uuid.uuid4())[:8]
-    file_path = UPLOAD_DIR / f"{analysis_id}_{file.filename}"
+    ct = file.content_type or ""
+    if ct not in ALLOWED_VIDEO:
+        raise HTTPException(400, detail=f"Unsupported type '{ct}'. Send MP4, AVI, or MOV.")
+
+    aid = str(uuid.uuid4())[:8]
+    fpath = UPLOAD_DIR / f"{aid}_{file.filename}"
 
     try:
-        content = await file.read()
-        if len(content) > MAX_FILE_SIZE_MB * 1024 * 1024:
-            raise HTTPException(413, "File too large (max 100MB)")
-        with open(file_path, 'wb') as f:
-            f.write(content)
+        data = await file.read()
+        if len(data) > MAX_MB * 1024 * 1024:
+            raise HTTPException(413, detail=f"File too large (max {MAX_MB}MB).")
+        fpath.write_bytes(data)
 
-        start = time.time()
-        result = analyzer.analyze_video(str(file_path), sample_rate=sample_rate)
-        elapsed_ms = (time.time() - start) * 1000
+        t0 = time.time()
+        result = analyzer.analyze_video(str(fpath), sample_rate=sample_rate)
+        ms = (time.time() - t0) * 1000
 
-        if 'error' in result:
-            raise HTTPException(500, result['error'])
+        if "error" in result:
+            raise HTTPException(500, detail=result["error"])
 
-        verdict = result.get('final_verdict', 'UNKNOWN')
-        fake_ratio = result.get('fake_frame_ratio', 0)
-        confidence = fake_ratio if verdict == 'FAKE' else (1 - fake_ratio)
+        verdict    = result.get("final_verdict", "UNKNOWN")
+        fake_ratio = result.get("fake_frame_ratio", 0.0)
+        confidence = fake_ratio if verdict == "FAKE" else (1 - fake_ratio)
 
-        heatmap_frames = result.get('heatmap_frames', [])
-        heatmap_url = save_heatmap(heatmap_frames[0] if heatmap_frames else None, analysis_id)
-        total_faces = sum(f.get('face_count', 0) for f in result.get('frame_level_results', []))
+        hframes = result.get("heatmap_frames", [])
+        hmap_url = save_heatmap(hframes[0] if hframes else None, aid)
+        total_faces = sum(f.get("face_count", 0) for f in result.get("frame_level_results", []))
 
-        response = AnalysisResult(
-            analysis_id=analysis_id,
-            input_type='video',
+        resp = AnalysisResult(
+            analysis_id=aid,
+            input_type="video",
             final_verdict=verdict,
             confidence=round(confidence, 4),
-            risk_score=result.get('risk_score', 0.0),
+            risk_score=result.get("risk_score", 0.0),
             faces_detected=total_faces,
-            processing_time_ms=round(elapsed_ms, 2),
-            explanation=generate_explanation(verdict, confidence, fake_ratio),
-            heatmap_url=heatmap_url,
-            total_frames=result.get('total_frames'),
-            analyzed_frames=result.get('analyzed_frames'),
-            fake_frame_ratio=result.get('fake_frame_ratio'),
-            duration_seconds=result.get('duration_seconds')
+            processing_time_ms=round(ms, 2),
+            explanation=explain(verdict, confidence),
+            heatmap_url=hmap_url,
+            total_frames=result.get("total_frames"),
+            analyzed_frames=result.get("analyzed_frames"),
+            fake_frame_ratio=result.get("fake_frame_ratio"),
+            duration_seconds=result.get("duration_seconds"),
         )
-        result_cache[analysis_id] = response.dict()
-        return response
-    finally:
-        if file_path.exists():
-            os.remove(file_path)
+        result_cache[aid] = resp.dict()
+        return resp
 
-@app.get("/results/{analysis_id}")
-def get_result(analysis_id: str):
-    if analysis_id not in result_cache:
-        raise HTTPException(404, "Result not found.")
-    return result_cache[analysis_id]
+    finally:
+        if fpath.exists():
+            fpath.unlink()
+
+@app.get("/results/{aid}")
+def get_result(aid: str):
+    if aid not in result_cache:
+        raise HTTPException(404, detail="Result not found.")
+    return result_cache[aid]

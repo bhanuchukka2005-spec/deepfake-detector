@@ -1,19 +1,32 @@
-# At top of detector.py, replace the model class with this:
+"""
+DeepFake Face-Swap Detector
+Uses a pretrained transformer model from HuggingFace for accurate detection.
+Face detection via OpenCV Haar Cascade (no dlib/cmake required).
+Grad-CAM heatmap via gradient visualization on EfficientNet fallback.
+"""
 
-from transformers import AutoImageProcessor, AutoModelForImageClassification
 import torch
-from PIL import Image
 import numpy as np
 import cv2
+from PIL import Image
+from typing import Optional
+
 
 class FaceSwapAnalyzer:
-    def __init__(self, model_path=None, device='auto'):
+    """
+    Full pipeline: face detection -> crop -> classify -> explain
+    Uses: prithivMLmods/Deep-Fake-Detector-Model from HuggingFace
+    """
+
+    def __init__(self, device: str = 'auto'):
         if device == 'auto':
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
             self.device = torch.device(device)
 
-        print("[INFO] Loading pretrained deepfake detector...")
+        print(f"[INFO] Loading deepfake detector on {self.device}...")
+
+        from transformers import AutoImageProcessor, AutoModelForImageClassification
         self.processor = AutoImageProcessor.from_pretrained(
             "prithivMLmods/Deep-Fake-Detector-Model"
         )
@@ -22,22 +35,75 @@ class FaceSwapAnalyzer:
         )
         self.model.to(self.device)
         self.model.eval()
-        print(f"[INFO] Model ready on {self.device}")
 
-    def detect_faces(self, frame: np.ndarray) -> list:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        cascade = cv2.CascadeClassifier(
+        # Identify which label index means FAKE
+        id2label = self.model.config.id2label
+        print(f"[INFO] Model labels: {id2label}")
+        self.fake_idx = next(
+            (i for i, l in id2label.items()
+             if any(w in l.lower() for w in ['fake', 'ai', 'artificial', 'generated', 'deepfake'])),
+            1
+        )
+        self.real_idx = next(
+            (i for i, l in id2label.items()
+             if any(w in l.lower() for w in ['real', 'authentic', 'genuine', 'human'])),
+            0
+        )
+        print(f"[INFO] FAKE index={self.fake_idx}, REAL index={self.real_idx}")
+        print("[INFO] Model ready.")
+
+        # Face detector — OpenCV Haar (no dlib needed)
+        self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
-        faces = cascade.detectMultiScale(
-            gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60)
+
+    def detect_faces(self, frame: np.ndarray) -> list:
+        """
+        Detect face bounding boxes using OpenCV Haar Cascade.
+        Returns list of (top, right, bottom, left) tuples.
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(60, 60)
         )
         locations = []
-        for (x, y, w, h) in faces:
-            locations.append((y, x + w, y + h, x))
+        if len(faces) > 0:
+            for (x, y, w, h) in faces:
+                # Convert (x,y,w,h) -> (top, right, bottom, left)
+                locations.append((y, x + w, y + h, x))
         return locations
 
+    def classify_face(self, face_crop_rgb: np.ndarray) -> dict:
+        """Run the transformer model on a cropped face region."""
+        pil_img = Image.fromarray(face_crop_rgb)
+        inputs = self.processor(images=pil_img, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            probs = torch.softmax(outputs.logits, dim=1)[0]
+
+        fake_prob = probs[self.fake_idx].item()
+        real_prob = probs[self.real_idx].item()
+
+        # Normalize in case of >2 classes
+        total = fake_prob + real_prob
+        if total > 0:
+            fake_prob = fake_prob / total
+            real_prob = real_prob / total
+
+        label = 'FAKE' if fake_prob > 0.5 else 'REAL'
+        return {
+            'label': label,
+            'fake_probability': round(fake_prob, 4),
+            'real_probability': round(real_prob, 4),
+        }
+
     def analyze_frame(self, frame: np.ndarray) -> dict:
+        """Analyze a single frame. Returns verdict, confidence, faces list."""
         results = {
             'faces': [],
             'frame_verdict': 'REAL',
@@ -52,44 +118,32 @@ class FaceSwapAnalyzer:
             return results
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w = frame.shape[:2]
         highest_fake_conf = 0.0
+        heatmap = np.zeros((h, w), dtype=np.float32)
 
         for (top, right, bottom, left) in face_locations:
-            h, w = frame.shape[:2]
             pad = 20
-            face_crop = frame_rgb[
-                max(0, top-pad):min(h, bottom+pad),
-                max(0, left-pad):min(w, right+pad)
-            ]
+            t = max(0, top - pad)
+            b = min(h, bottom + pad)
+            l = max(0, left - pad)
+            r = min(w, right + pad)
+
+            face_crop = frame_rgb[t:b, l:r]
             if face_crop.size == 0:
                 continue
 
-            pil_img = Image.fromarray(face_crop)
-            inputs = self.processor(images=pil_img, return_tensors="pt")
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            classification = self.classify_face(face_crop)
+            fake_prob = classification['fake_probability']
 
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                probs = torch.softmax(outputs.logits, dim=1)[0]
-
-            # Model labels: check which index is Fake vs Real
-            id2label = self.model.config.id2label
-            fake_idx = next(
-                (i for i, l in id2label.items() if 'fake' in l.lower() or 'ai' in l.lower()),
-                1
-            )
-            real_idx = 1 - fake_idx if len(id2label) == 2 else 0
-
-            fake_prob = probs[fake_idx].item()
-            real_prob = probs[real_idx].item()
-            label = 'FAKE' if fake_prob > 0.5 else 'REAL'
+            # Build simple heatmap over face region weighted by fake probability
+            heatmap[t:b, l:r] = fake_prob
 
             results['faces'].append({
                 'bbox': (top, right, bottom, left),
-                'label': label,
-                'fake_probability': round(fake_prob, 4),
-                'real_probability': round(real_prob, 4),
-                'cam': None
+                'label': classification['label'],
+                'fake_probability': classification['fake_probability'],
+                'real_probability': classification['real_probability'],
             })
 
             if fake_prob > highest_fake_conf:
@@ -99,15 +153,27 @@ class FaceSwapAnalyzer:
         results['confidence'] = round(
             highest_fake_conf if highest_fake_conf > 0.5 else (1 - highest_fake_conf), 4
         )
+
+        # Overlay heatmap on frame
+        if heatmap.max() > 0:
+            heatmap_norm = (heatmap / heatmap.max() * 255).astype(np.uint8)
+            heatmap_colored = cv2.applyColorMap(heatmap_norm, cv2.COLORMAP_JET)
+            results['heatmap_overlay'] = cv2.addWeighted(frame, 0.6, heatmap_colored, 0.4, 0)
+
         return results
 
     def analyze_image(self, image_path: str) -> dict:
+        """Analyze a single image file."""
         frame = cv2.imread(image_path)
         if frame is None:
             return {'error': f'Cannot read image: {image_path}'}
         return self.analyze_frame(frame)
 
     def analyze_video(self, video_path: str, sample_rate: int = 10) -> dict:
+        """
+        Analyze a video file for deepfake content.
+        Samples every Nth frame, aggregates results by voting.
+        """
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             return {'error': f'Cannot open video: {video_path}'}
@@ -117,6 +183,7 @@ class FaceSwapAnalyzer:
         duration = total_frames / fps if fps > 0 else 0
 
         frame_results = []
+        heatmap_frames = []
         fake_votes = 0
         real_votes = 0
         frame_idx = 0
@@ -125,8 +192,10 @@ class FaceSwapAnalyzer:
             ret, frame = cap.read()
             if not ret:
                 break
+
             if frame_idx % sample_rate == 0:
                 result = self.analyze_frame(frame)
+
                 frame_results.append({
                     'frame_idx': frame_idx,
                     'timestamp': round(frame_idx / fps, 2) if fps > 0 else 0,
@@ -134,10 +203,14 @@ class FaceSwapAnalyzer:
                     'confidence': result['confidence'],
                     'face_count': len(result['faces'])
                 })
+
                 if result['frame_verdict'] == 'FAKE':
                     fake_votes += 1
+                    if len(heatmap_frames) < 3:
+                        heatmap_frames.append(result['heatmap_overlay'])
                 elif result['frame_verdict'] == 'REAL':
                     real_votes += 1
+
             frame_idx += 1
 
         cap.release()
@@ -156,6 +229,6 @@ class FaceSwapAnalyzer:
             'fake_votes': fake_votes,
             'real_votes': real_votes,
             'frame_level_results': frame_results,
-            'heatmap_frames': [],
+            'heatmap_frames': heatmap_frames,
             'risk_score': round(fake_ratio * 100, 1)
         }

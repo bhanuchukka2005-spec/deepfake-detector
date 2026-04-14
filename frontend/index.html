@@ -617,8 +617,8 @@
   </div>
 
   <div class="api-notice">
-    <strong>⚠ Demo Mode</strong>
-    This frontend connects to <code>http://localhost:8000</code>. Run the FastAPI backend locally to get real predictions. The UI currently shows simulated results for demonstration.
+    <strong>ℹ Backend Required</strong>
+    This UI connects to <code>http://localhost:8000</code>. Start the FastAPI backend before analyzing files. See README for setup instructions.
   </div>
 
   <!-- Type selector -->
@@ -825,8 +825,8 @@
     const msgs = [
       'Detecting faces...',
       'Cropping facial regions...',
-      'Running EfficientNet-B0...',
-      'Computing Grad-CAM heatmap...',
+      'Running deepfake classifier...',
+      'Building heatmap...',
       'Generating verdict...'
     ];
     let i = 0;
@@ -837,19 +837,28 @@
     }, 900);
 
     try {
-      let result;
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      const endpoint = currentType === 'image' ? '/analyze/image' : '/analyze/video';
+
+      let resp;
       try {
-        const formData = new FormData();
-        formData.append('file', selectedFile);
-        const endpoint = currentType === 'image' ? '/analyze/image' : '/analyze/video';
-        const resp = await fetch(API_BASE + endpoint, { method: 'POST', body: formData });
-        if (!resp.ok) throw new Error('API error: ' + resp.status);
-        result = await resp.json();
-      } catch (err) {
-        // Demo fallback when API not running
-        result = generateDemoResult();
+        resp = await fetch(API_BASE + endpoint, { method: 'POST', body: formData });
+      } catch (networkErr) {
+        throw new Error(
+          'Cannot connect to backend at ' + API_BASE + '.\n\n' +
+          'Make sure the API is running:\n' +
+          'cd api\nuvicorn main:app --host 0.0.0.0 --port 8000 --reload'
+        );
       }
 
+      if (!resp.ok) {
+        let detail = '';
+        try { detail = (await resp.json()).detail || ''; } catch(_) {}
+        throw new Error(`Server error ${resp.status}: ${detail}`);
+      }
+
+      const result = await resp.json();
       clearInterval(interval);
       document.getElementById('loading').classList.remove('visible');
       displayResults(result);
@@ -858,7 +867,7 @@
       clearInterval(interval);
       document.getElementById('loading').classList.remove('visible');
       document.getElementById('analyze-btn').disabled = false;
-      alert('Analysis failed: ' + err.message);
+      alert('Analysis failed:\n\n' + err.message);
     }
   }
 

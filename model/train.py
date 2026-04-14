@@ -20,7 +20,7 @@ from sklearn.metrics import classification_report, roc_auc_score
 from tqdm import tqdm
 import face_recognition
 
-from detector import DeepFakeDetector
+from detector import FaceSwapAnalyzer as DeepFakeDetector
 
 
 class FaceForensicsDataset(Dataset):
