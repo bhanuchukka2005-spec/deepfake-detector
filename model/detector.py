@@ -2,7 +2,7 @@
 DeepFake Face-Swap Detector
 Uses a pretrained transformer model from HuggingFace for accurate detection.
 Face detection via OpenCV Haar Cascade (no dlib/cmake required).
-Grad-CAM heatmap via gradient visualization on EfficientNet fallback.
+Probability heatmap overlaid on face regions weighted by fake confidence score.
 """
 
 import torch
@@ -61,19 +61,33 @@ class FaceSwapAnalyzer:
         """
         Detect face bounding boxes using OpenCV Haar Cascade.
         Returns list of (top, right, bottom, left) tuples.
+        Falls back to full-frame analysis if no face detected.
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Try standard detection first
         faces = self.face_cascade.detectMultiScale(
             gray,
             scaleFactor=1.1,
             minNeighbors=5,
             minSize=(60, 60)
         )
+
+        # Relax constraints if nothing found (profile faces, partial occlusion)
+        if len(faces) == 0:
+            faces = self.face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.05,
+                minNeighbors=3,
+                minSize=(40, 40)
+            )
+
         locations = []
         if len(faces) > 0:
             for (x, y, w, h) in faces:
                 # Convert (x,y,w,h) -> (top, right, bottom, left)
                 locations.append((y, x + w, y + h, x))
+
         return locations
 
     def classify_face(self, face_crop_rgb: np.ndarray) -> dict:
@@ -103,7 +117,11 @@ class FaceSwapAnalyzer:
         }
 
     def analyze_frame(self, frame: np.ndarray) -> dict:
-        """Analyze a single frame. Returns verdict, confidence, faces list."""
+        """
+        Analyze a single frame. Returns verdict, confidence, faces list,
+        and a probability heatmap overlay highlighting regions by fake score.
+        If no face is detected, falls back to full-frame classification.
+        """
         results = {
             'faces': [],
             'frame_verdict': 'REAL',
@@ -113,8 +131,23 @@ class FaceSwapAnalyzer:
 
         face_locations = self.detect_faces(frame)
 
+        # Fallback: run classifier on the full frame when no face is found
         if not face_locations:
-            results['frame_verdict'] = 'NO_FACE'
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            classification = self.classify_face(frame_rgb)
+            results['frame_verdict'] = classification['label']
+            results['confidence'] = (
+                classification['fake_probability']
+                if classification['label'] == 'FAKE'
+                else classification['real_probability']
+            )
+            results['faces'] = [{
+                'bbox': (0, frame.shape[1], frame.shape[0], 0),
+                'label': classification['label'],
+                'fake_probability': classification['fake_probability'],
+                'real_probability': classification['real_probability'],
+                'full_frame_fallback': True,
+            }]
             return results
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -136,7 +169,7 @@ class FaceSwapAnalyzer:
             classification = self.classify_face(face_crop)
             fake_prob = classification['fake_probability']
 
-            # Build simple heatmap over face region weighted by fake probability
+            # Build probability heatmap over face region weighted by fake score
             heatmap[t:b, l:r] = fake_prob
 
             results['faces'].append({
@@ -154,7 +187,7 @@ class FaceSwapAnalyzer:
             highest_fake_conf if highest_fake_conf > 0.5 else (1 - highest_fake_conf), 4
         )
 
-        # Overlay heatmap on frame
+        # Overlay probability heatmap on frame (JET colormap: blue=low, red=high fake prob)
         if heatmap.max() > 0:
             heatmap_norm = (heatmap / heatmap.max() * 255).astype(np.uint8)
             heatmap_colored = cv2.applyColorMap(heatmap_norm, cv2.COLORMAP_JET)

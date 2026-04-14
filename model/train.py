@@ -2,13 +2,18 @@
 Training Script for DeepFake Detector
 Dataset: FaceForensics++ (c23 compression)
 https://github.com/ondyari/FaceForensics
+
+Usage:
+  python train.py --data_dir ./data --epochs 20 --batch_size 32
+
+NOTE: Face extraction uses OpenCV Haar Cascade (no dlib/cmake required).
 """
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
-from torchvision import transforms
+from torchvision import transforms, models
 import numpy as np
 import cv2
 from PIL import Image
@@ -16,23 +21,48 @@ import os
 import json
 import random
 from pathlib import Path
-from sklearn.metrics import classification_report, roc_auc_score
+from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
-import face_recognition
 
-from detector import FaceSwapAnalyzer as DeepFakeDetector
 
+# ---------------------------------------------------------------------------
+# Trainable model wrapper (nn.Module)
+# ---------------------------------------------------------------------------
+
+class DeepFakeClassifier(nn.Module):
+    """
+    EfficientNet-B0 backbone fine-tuned for binary deepfake classification.
+    Kept separate from FaceSwapAnalyzer (inference-only) in detector.py.
+    """
+
+    def __init__(self, num_classes: int = 2, pretrained: bool = True):
+        super().__init__()
+        weights = models.EfficientNet_B0_Weights.DEFAULT if pretrained else None
+        backbone = models.efficientnet_b0(weights=weights)
+        in_features = backbone.classifier[1].in_features
+        backbone.classifier = nn.Sequential(
+            nn.Dropout(p=0.3, inplace=True),
+            nn.Linear(in_features, num_classes),
+        )
+        self.backbone = backbone
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.backbone(x)
+
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
 
 class FaceForensicsDataset(Dataset):
     """
     FaceForensics++ Dataset Loader.
-    
+
     Expected directory structure:
     data/
       real/
         video1/
           frame_001.png
-          frame_002.png
           ...
       fake/
         DeepFakes/
@@ -124,13 +154,12 @@ class FaceForensicsDataset(Dataset):
             img = Image.open(img_path).convert('RGB')
             tensor = self.transform(img)
             return tensor, label
-        except Exception as e:
-            # Return a black image on error
+        except Exception:
             tensor = torch.zeros(3, 224, 224)
             return tensor, label
 
     def get_class_weights(self):
-        """Compute class weights for handling imbalance."""
+        """Compute class weights for handling class imbalance."""
         labels = [l for _, l in self.samples]
         n_real = labels.count(0)
         n_fake = labels.count(1)
@@ -138,13 +167,23 @@ class FaceForensicsDataset(Dataset):
         return [total / (2 * n_real), total / (2 * n_fake)]
 
 
+# ---------------------------------------------------------------------------
+# Frame extraction utility (OpenCV Haar — no dlib/cmake required)
+# ---------------------------------------------------------------------------
+
 def extract_frames_from_video(video_path: str, output_dir: str,
                                max_frames: int = 50, face_only: bool = True):
     """
     Utility: Extract frames from video, optionally cropping to face region.
+    Uses OpenCV Haar Cascade for face detection (no dlib or cmake required).
     Use this to preprocess FaceForensics++ videos.
     """
     os.makedirs(output_dir, exist_ok=True)
+
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+    )
+
     cap = cv2.VideoCapture(video_path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     sample_rate = max(1, total // max_frames)
@@ -159,14 +198,21 @@ def extract_frames_from_video(video_path: str, output_dir: str,
 
         if frame_idx % sample_rate == 0:
             if face_only:
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                faces = face_recognition.face_locations(rgb, model='hog')
-                if faces:
-                    top, right, bottom, left = faces[0]
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                faces = face_cascade.detectMultiScale(
+                    gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60)
+                )
+                # Relax if nothing detected
+                if len(faces) == 0:
+                    faces = face_cascade.detectMultiScale(
+                        gray, scaleFactor=1.05, minNeighbors=3, minSize=(40, 40)
+                    )
+                if len(faces) > 0:
+                    x, y, w, h = faces[0]
                     pad = 30
-                    h, w = frame.shape[:2]
-                    crop = frame[max(0, top-pad):min(h, bottom+pad),
-                                 max(0, left-pad):min(w, right+pad)]
+                    fh, fw = frame.shape[:2]
+                    crop = frame[max(0, y - pad):min(fh, y + h + pad),
+                                 max(0, x - pad):min(fw, x + w + pad)]
                     if crop.size > 0:
                         cv2.imwrite(f"{output_dir}/frame_{saved:04d}.png", crop)
                         saved += 1
@@ -180,8 +226,12 @@ def extract_frames_from_video(video_path: str, output_dir: str,
     return saved
 
 
+# ---------------------------------------------------------------------------
+# Trainer
+# ---------------------------------------------------------------------------
+
 class Trainer:
-    def __init__(self, model: DeepFakeDetector, device: torch.device,
+    def __init__(self, model: DeepFakeClassifier, device: torch.device,
                  save_dir: str = './checkpoints'):
         self.model = model
         self.device = device
@@ -191,7 +241,6 @@ class Trainer:
 
     def train(self, train_loader: DataLoader, val_loader: DataLoader,
               epochs: int = 20, lr: float = 1e-4):
-        # Class-balanced loss
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.AdamW(self.model.parameters(), lr=lr, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
@@ -283,6 +332,10 @@ class Trainer:
             json.dump(self.history, f, indent=2)
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 if __name__ == '__main__':
     import argparse
 
@@ -311,7 +364,7 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
                             shuffle=False, num_workers=4, pin_memory=True)
 
-    model = DeepFakeDetector(num_classes=2, pretrained=True)
+    model = DeepFakeClassifier(num_classes=2, pretrained=True)
     model.to(device)
     print(f"[INFO] Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 

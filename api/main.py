@@ -7,8 +7,9 @@ Routes:
   GET  /results/{id}     get cached result
 """
 
-import os, sys, uuid, time, random, cv2, datetime
+import os, sys, uuid, time, hashlib, cv2, datetime
 import numpy as np
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, List
 
@@ -26,7 +27,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # TODO: restrict to frontend origin in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,7 +61,20 @@ MAX_MB = 100
 ALLOWED_IMAGE = {'image/jpeg', 'image/png', 'image/webp', 'image/jpg'}
 ALLOWED_VIDEO = {'video/mp4', 'video/avi', 'video/quicktime',
                  'video/x-matroska', 'video/x-msvideo'}
-result_cache = {}
+
+# In-memory result cache (LRU-style, bounded to 200 entries)
+# For production: replace with Redis or a database.
+MAX_CACHE_SIZE = 200
+result_cache: OrderedDict = OrderedDict()
+
+
+def cache_set(key: str, value: dict):
+    if key in result_cache:
+        result_cache.move_to_end(key)
+    result_cache[key] = value
+    if len(result_cache) > MAX_CACHE_SIZE:
+        result_cache.popitem(last=False)
+
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
 class FaceResult(BaseModel):
@@ -86,24 +100,42 @@ class AnalysisResult(BaseModel):
     duration_seconds: Optional[float] = None
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def explain(verdict: str, confidence: float) -> str:
+
+# All artifact descriptions — deterministically selected via analysis_id hash
+_FAKE_ARTIFACTS = [
+    "unnatural blending around facial boundaries",
+    "inconsistent lighting and skin texture",
+    "temporal flickering in facial regions",
+    "misaligned facial features",
+    "GAN-specific frequency artifacts in facial regions",
+    "abnormal eye reflection patterns",
+    "colour banding at the face-background boundary",
+]
+
+
+def explain(verdict: str, confidence: float, analysis_id: str = "") -> str:
+    """
+    Generate a deterministic explanation tied to the analysis_id so
+    repeated submissions of the same file always produce the same text.
+    """
     if verdict == 'FAKE':
         level = "Very high" if confidence > 0.9 else "Strong" if confidence > 0.7 else "Moderate"
-        picked = random.sample([
-            "unnatural blending around facial boundaries",
-            "inconsistent lighting and skin texture",
-            "temporal flickering in facial regions",
-            "misaligned facial features",
-            "GAN-specific frequency artifacts in facial regions",
-        ], 2)
+        # Deterministic selection — hash the analysis_id to pick two artifacts
+        seed = int(hashlib.md5(analysis_id.encode()).hexdigest(), 16)
+        idx1 = seed % len(_FAKE_ARTIFACTS)
+        idx2 = (seed // len(_FAKE_ARTIFACTS)) % len(_FAKE_ARTIFACTS)
+        if idx2 == idx1:
+            idx2 = (idx2 + 1) % len(_FAKE_ARTIFACTS)
+        a1, a2 = _FAKE_ARTIFACTS[idx1], _FAKE_ARTIFACTS[idx2]
         return (f"{level} probability of face-swap manipulation detected. "
-                f"The model identified {picked[0]} and {picked[1]}. "
+                f"The model identified {a1} and {a2}. "
                 "Red/yellow regions in the heatmap highlight where artifacts were found.")
     if verdict == 'REAL':
         return (f"No significant manipulation artifacts detected (confidence: {confidence:.0%}). "
                 "Facial regions appear consistent with authentic footage — natural skin texture, "
                 "consistent lighting, and stable facial boundaries observed.")
     return "No face detected in this media. Cannot perform deepfake analysis."
+
 
 def save_heatmap(frame, analysis_id: str) -> Optional[str]:
     if frame is None:
@@ -114,6 +146,18 @@ def save_heatmap(frame, analysis_id: str) -> Optional[str]:
         return f"/results_static/{analysis_id}_heatmap.jpg"
     except Exception:
         return None
+
+
+def _compute_risk(verdict: str, fake_prob_or_ratio: float) -> float:
+    """
+    Risk score (0–100).
+    FAKE  → proportional to fake probability/ratio.
+    REAL  → low residual risk based on (1 - confidence).
+    """
+    if verdict == 'FAKE':
+        return round(fake_prob_or_ratio * 100, 1)
+    return round((1.0 - fake_prob_or_ratio) * 100, 1)
+
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.get("/")
@@ -160,7 +204,12 @@ async def analyze_image(file: UploadFile = File(...)):
 
         verdict    = result.get("frame_verdict", "UNKNOWN")
         confidence = result.get("confidence", 0.0)
-        risk       = confidence * 100 if verdict == "FAKE" else (1 - confidence) * 100
+
+        # Risk: for FAKE use fake_prob of top face; for REAL use (1 - confidence)
+        top_fake_prob = max(
+            (f["fake_probability"] for f in result.get("faces", [])), default=confidence
+        )
+        risk = _compute_risk(verdict, top_fake_prob if verdict == "FAKE" else confidence)
 
         faces = [
             FaceResult(
@@ -177,14 +226,14 @@ async def analyze_image(file: UploadFile = File(...)):
             input_type="image",
             final_verdict=verdict,
             confidence=confidence,
-            risk_score=round(risk, 1),
+            risk_score=risk,
             faces_detected=len(faces),
             processing_time_ms=round(ms, 2),
-            explanation=explain(verdict, confidence),
+            explanation=explain(verdict, confidence, aid),
             heatmap_url=save_heatmap(result.get("heatmap_overlay"), aid),
             face_results=faces,
         )
-        result_cache[aid] = resp.dict()
+        cache_set(aid, resp.dict())
         return resp
 
     finally:
@@ -218,9 +267,11 @@ async def analyze_video(file: UploadFile = File(...), sample_rate: int = 10):
 
         verdict    = result.get("final_verdict", "UNKNOWN")
         fake_ratio = result.get("fake_frame_ratio", 0.0)
-        confidence = fake_ratio if verdict == "FAKE" else (1 - fake_ratio)
+        # Confidence = fake_ratio for FAKE, (1 - fake_ratio) for REAL
+        confidence = fake_ratio if verdict == "FAKE" else (1.0 - fake_ratio)
+        risk       = _compute_risk(verdict, fake_ratio)
 
-        hframes = result.get("heatmap_frames", [])
+        hframes  = result.get("heatmap_frames", [])
         hmap_url = save_heatmap(hframes[0] if hframes else None, aid)
         total_faces = sum(f.get("face_count", 0) for f in result.get("frame_level_results", []))
 
@@ -229,17 +280,17 @@ async def analyze_video(file: UploadFile = File(...), sample_rate: int = 10):
             input_type="video",
             final_verdict=verdict,
             confidence=round(confidence, 4),
-            risk_score=result.get("risk_score", 0.0),
+            risk_score=risk,
             faces_detected=total_faces,
             processing_time_ms=round(ms, 2),
-            explanation=explain(verdict, confidence),
+            explanation=explain(verdict, confidence, aid),
             heatmap_url=hmap_url,
             total_frames=result.get("total_frames"),
             analyzed_frames=result.get("analyzed_frames"),
             fake_frame_ratio=result.get("fake_frame_ratio"),
             duration_seconds=result.get("duration_seconds"),
         )
-        result_cache[aid] = resp.dict()
+        cache_set(aid, resp.dict())
         return resp
 
     finally:

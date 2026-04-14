@@ -613,11 +613,11 @@
 <main>
   <div class="hero">
     <h1>Detect <span>Face-Swap</span><br>Deepfakes with AI</h1>
-    <p>Upload an image or video. Our model analyzes facial regions and highlights manipulation artifacts using Grad-CAM explainability.</p>
+    <p>Upload an image or video. Our model analyzes facial regions and highlights manipulation artifact regions using a probability heatmap.</p>
   </div>
 
   <div class="api-notice">
-    <strong>ℹ Backend Required</strong>
+    <strong>ℹ Backend Required(Not Error)</strong>
     This UI connects to <code>http://localhost:8000</code>. Start the FastAPI backend before analyzing files. See README for setup instructions.
   </div>
 
@@ -692,7 +692,7 @@
 
     <!-- Heatmap -->
     <div class="heatmap-section">
-      <div class="heatmap-header">Grad-CAM Explainability Heatmap</div>
+      <div class="heatmap-header">Probability Heatmap — Artifact Regions</div>
       <div id="heatmap-container">
         <div class="heatmap-placeholder">
           <span style="font-size:2rem">🔥</span>
@@ -729,7 +729,7 @@
       <div class="arch-step">
         <div class="arch-step-icon">👤</div>
         <div class="arch-step-name">Face Detection</div>
-        <div class="arch-step-label">dlib HOG model</div>
+        <div class="arch-step-label">OpenCV Haar Cascade</div>
       </div>
       <div class="arch-step">
         <div class="arch-step-icon">✂️</div>
@@ -743,8 +743,8 @@
       </div>
       <div class="arch-step">
         <div class="arch-step-icon">🔥</div>
-        <div class="arch-step-name">Grad-CAM</div>
-        <div class="arch-step-label">Artifact highlighting</div>
+        <div class="arch-step-name">Heatmap</div>
+        <div class="arch-step-label">Probability overlay
       </div>
       <div class="arch-step">
         <div class="arch-step-icon">📊</div>
@@ -954,13 +954,13 @@
     // Heatmap
     const heatmapContainer = document.getElementById('heatmap-container');
     if (data.heatmap_url) {
-      heatmapContainer.innerHTML = `<img src="${API_BASE + data.heatmap_url}" alt="Grad-CAM heatmap" style="width:100%;display:block;max-height:360px;object-fit:contain;background:#000;" />`;
+      heatmapContainer.innerHTML = `<img src="${API_BASE + data.heatmap_url}" alt="Probability heatmap" style="width:100%;display:block;max-height:360px;object-fit:contain;background:#000;" />`;
     } else {
       heatmapContainer.innerHTML = `
         <div class="heatmap-placeholder">
           <span style="font-size:2rem">🔥</span>
           <span style="color:var(--muted)">Heatmap available when backend is connected</span>
-          <span style="font-size:0.75rem;color:var(--muted);opacity:0.6">Grad-CAM highlights manipulation artifact regions in red/yellow</span>
+          <span style="font-size:0.75rem;color:var(--muted);opacity:0.6">Heatmap: red/yellow = high fake probability, blue = low</span>
         </div>
       `;
     }
