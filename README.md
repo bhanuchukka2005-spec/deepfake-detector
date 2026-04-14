@@ -251,26 +251,27 @@ Trained to distinguish real human faces from AI-generated or face-swapped images
 
 The following improvements and extensions are planned or recommended for future development iterations:
 
-- Short-Term Improvements
+- **Short-Term Improvements**
 
-• GPU Acceleration — add CUDA batching for video frames to reduce video analysis time from minutes to seconds on NVIDIA hardware.
-• Audio Deepfake Detection — extend the pipeline to analyse audio tracks for voice-cloning artifacts using a separate audio classifier.
-• Confidence Calibration — apply temperature scaling post-training to ensure predicted probabilities are well-calibrated and not overconfident.
-• CORS Hardening — restrict allow_origins in main.py to specific trusted domains before production deployment.
+- GPU Acceleration — add CUDA batching for video frames to reduce video analysis time from minutes to seconds on NVIDIA hardware.
+- Audio Deepfake Detection — extend the pipeline to analyse audio tracks for voice-cloning artifacts using a separate audio classifier.
+- Confidence Calibration — apply temperature scaling post-training to ensure predicted probabilities are well-calibrated and not overconfident.
+- CORS Hardening — restrict allow_origins in main.py to specific trusted domains before production deployment.
 
-- Medium-Term Extensions
+- **Medium-Term Extensions**
 
-• Persistent Storage — replace the in-memory LRU cache with a PostgreSQL or Redis backend to survive server restarts and support multi-instance deployments.
-• Model Versioning — add an endpoint to report the active model version and support hot-swapping models without restarting the server.
-• Batch API — accept zip archives of images for bulk analysis, useful for content moderation at scale.
-• User Authentication — add JWT-based auth and per-user rate limiting for public-facing deployments.
+- Persistent Storage — replace the in-memory LRU cache with a PostgreSQL or Redis backend to survive server restarts and support multi-instance deployments.
+- Model Versioning — add an endpoint to report the active model version and support hot-swapping models without restarting the server.
+- Batch API — accept zip archives of images for bulk analysis, useful for content moderation at scale.
+- User Authentication — add JWT-based auth and per-user rate limiting for public-facing deployments.
 
-- Long-Term Research Directions
+- **Long-Term Research Directions**
 
-• Adversarial Robustness — evaluate and harden the model against adversarial perturbations specifically designed to fool deepfake detectors.
-• Multi-Modal Analysis — combine face, background, and audio signals into a unified multi-modal confidence score.
-• Continual Learning — implement a feedback loop where flagged results reviewed by human moderators are periodically used to fine-tune the model on emerging manipulation techniques.
-• Mobile Deployment — export the model to ONNX or TensorFlow Lite for on-device inference in iOS/Android applications, eliminating the need for a server.
+- Adversarial Robustness — evaluate and harden the model against adversarial perturbations specifically designed to fool deepfake detectors.
+- Multi-Modal Analysis — combine face, background, and audio signals into a unified multi-modal confidence score.
+- Continual Learning — implement a feedback loop where flagged results reviewed by human moderators are periodically used to fine-tune the model on emerging manipulation techniques.
+- Mobile Deployment — export the model to ONNX or TensorFlow Lite for on-device inference in iOS/Android applications, eliminating the need for a server.
+
 ---
 
 ## License
