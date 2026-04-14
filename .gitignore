@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.env
+
+# ML models
+checkpoints/
+*.pth
+
+# uploads/results
+uploads/
+results/
+
+# system
+.DS_Store
+Thumbs.db

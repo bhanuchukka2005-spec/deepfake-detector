@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeepShield — Deepfake Detector</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg: #0a0c10;
+    --bg2: #111318;
+    --bg3: #1a1d24;
+    --border: rgba(255,255,255,0.08);
+    --border2: rgba(255,255,255,0.14);
+    --text: #e8eaf0;
+    --muted: #7a7f8e;
+    --accent: #4ade80;
+    --accent2: #22d3ee;
+    --danger: #f87171;
+    --warning: #fb923c;
+    --mono: 'Space Mono', monospace;
+    --sans: 'DM Sans', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.25rem 2rem;
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(10,12,16,0.9);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+
+  .logo-icon {
+    width: 28px; height: 28px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+  }
+
+  .nav-tag {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 3px 8px;
+    border-radius: 4px;
+    opacity: 0.7;
+  }
+
+  main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 3rem 1.5rem;
+  }
+
+  .hero {
+    text-align: center;
+    margin-bottom: 3rem;
+  }
+
+  .hero h1 {
+    font-family: var(--mono);
+    font-size: clamp(1.8rem, 5vw, 2.8rem);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin-bottom: 1rem;
+  }
+
+  .hero h1 span {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .hero p {
+    color: var(--muted);
+    font-size: 1rem;
+    max-width: 500px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+
+  .upload-zone {
+    border: 1.5px dashed var(--border2);
+    border-radius: 16px;
+    padding: 3rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    background: var(--bg2);
+    margin-bottom: 1.5rem;
+  }
+
+  .upload-zone:hover, .upload-zone.drag-over {
+    border-color: var(--accent);
+    background: rgba(74, 222, 128, 0.04);
+  }
+
+  .upload-zone input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+
+  .upload-icon {
+    width: 48px; height: 48px;
+    border: 1.5px solid var(--border2);
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1rem;
+    font-size: 1.3rem;
+    background: var(--bg3);
+  }
+
+  .upload-zone h3 {
+    font-size: 0.95rem;
+    font-weight: 500;
+    margin-bottom: 0.4rem;
+  }
+
+  .upload-zone p {
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  .type-selector {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 1.5rem;
+  }
+
+  .type-btn {
+    flex: 1;
+    padding: 0.65rem;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .type-btn.active, .type-btn:hover {
+    border-color: var(--accent2);
+    color: var(--accent2);
+    background: rgba(34, 211, 238, 0.06);
+  }
+
+  .analyze-btn {
+    width: 100%;
+    padding: 0.9rem;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border: none;
+    border-radius: 10px;
+    color: #0a0c10;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .analyze-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px rgba(74, 222, 128, 0.2);
+  }
+
+  .analyze-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  /* Results Panel */
+  .results-panel {
+    display: none;
+    margin-top: 2rem;
+  }
+
+  .results-panel.visible { display: block; }
+
+  .result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .verdict-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0.5rem 1.2rem;
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .verdict-badge.FAKE {
+    background: rgba(248, 113, 113, 0.12);
+    color: var(--danger);
+    border: 1px solid rgba(248, 113, 113, 0.3);
+  }
+
+  .verdict-badge.REAL {
+    background: rgba(74, 222, 128, 0.1);
+    color: var(--accent);
+    border: 1px solid rgba(74, 222, 128, 0.25);
+  }
+
+  .verdict-badge.NO_FACE {
+    background: rgba(251, 146, 60, 0.1);
+    color: var(--warning);
+    border: 1px solid rgba(251, 146, 60, 0.25);
+  }
+
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 1.5rem;
+  }
+
+  .metric-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+  }
+
+  .metric-label {
+    font-size: 0.72rem;
+    color: var(--muted);
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 6px;
+  }
+
+  .metric-value {
+    font-size: 1.4rem;
+    font-weight: 600;
+    font-family: var(--mono);
+  }
+
+  .metric-value.danger { color: var(--danger); }
+  .metric-value.success { color: var(--accent); }
+  .metric-value.warning { color: var(--warning); }
+  .metric-value.info { color: var(--accent2); }
+
+  /* Risk meter */
+  .risk-meter {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .risk-label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+    font-size: 0.8rem;
+  }
+
+  .risk-label span:first-child {
+    font-family: var(--mono);
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .risk-bar-bg {
+    height: 8px;
+    border-radius: 4px;
+    background: var(--bg3);
+    overflow: hidden;
+  }
+
+  .risk-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.8s cubic-bezier(0.34, 1.56, 0.64, 1);
+    background: linear-gradient(90deg, var(--accent), var(--warning), var(--danger));
+  }
+
+  .explanation-box {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent2);
+    border-radius: 0 10px 10px 0;
+    padding: 1rem 1.25rem;
+    font-size: 0.87rem;
+    line-height: 1.65;
+    color: #b0b5c2;
+    margin-bottom: 1.5rem;
+  }
+
+  .heatmap-section {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 1.5rem;
+  }
+
+  .heatmap-header {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.75rem;
+    font-family: var(--mono);
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .heatmap-header::before {
+    content: '';
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent2);
+    display: inline-block;
+  }
+
+  .heatmap-section img {
+    width: 100%;
+    display: block;
+    max-height: 360px;
+    object-fit: contain;
+    background: #000;
+  }
+
+  .heatmap-placeholder {
+    height: 200px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  /* Frame timeline for video */
+  .timeline {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .timeline h4 {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 1rem;
+  }
+
+  .frame-bars {
+    display: flex;
+    gap: 3px;
+    align-items: flex-end;
+    height: 60px;
+  }
+
+  .frame-bar {
+    flex: 1;
+    border-radius: 2px;
+    transition: height 0.3s;
+    min-width: 4px;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .frame-bar.fake { background: var(--danger); opacity: 0.8; }
+  .frame-bar.real { background: var(--accent); opacity: 0.5; }
+  .frame-bar.no_face { background: var(--muted); opacity: 0.4; }
+
+  /* Loading state */
+  .loading-overlay {
+    display: none;
+    text-align: center;
+    padding: 2rem;
+  }
+
+  .loading-overlay.visible { display: block; }
+
+  .spinner {
+    width: 40px; height: 40px;
+    border: 2px solid var(--border2);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 1rem;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .loading-text {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--muted);
+    animation: blink 1.2s ease infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .preview-section {
+    display: none;
+    margin-bottom: 1rem;
+  }
+
+  .preview-section.visible { display: block; }
+
+  .preview-section img, .preview-section video {
+    max-width: 100%;
+    max-height: 260px;
+    border-radius: 10px;
+    display: block;
+    margin: 0 auto;
+    border: 1px solid var(--border);
+  }
+
+  .file-name-tag {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--accent2);
+    text-align: center;
+    margin-top: 6px;
+  }
+
+  /* API notice */
+  .api-notice {
+    background: rgba(251, 146, 60, 0.06);
+    border: 1px solid rgba(251, 146, 60, 0.2);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.8rem;
+    color: #c9a06a;
+    line-height: 1.55;
+  }
+
+  .api-notice strong {
+    display: block;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 4px;
+    color: var(--warning);
+  }
+
+  /* Architecture section */
+  .arch-section {
+    margin-top: 3rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .arch-title {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    margin-bottom: 1.5rem;
+    text-align: center;
+  }
+
+  .arch-steps {
+    display: flex;
+    gap: 0;
+    align-items: stretch;
+    overflow-x: auto;
+  }
+
+  .arch-step {
+    flex: 1;
+    min-width: 110px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 0;
+    padding: 1rem 0.75rem;
+    text-align: center;
+    position: relative;
+  }
+
+  .arch-step:first-child { border-radius: 10px 0 0 10px; }
+  .arch-step:last-child { border-radius: 0 10px 10px 0; }
+
+  .arch-step:not(:last-child)::after {
+    content: '→';
+    position: absolute;
+    right: -12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--muted);
+    font-size: 0.9rem;
+    z-index: 1;
+  }
+
+  .arch-step-icon {
+    font-size: 1.3rem;
+    margin-bottom: 0.4rem;
+  }
+
+  .arch-step-label {
+    font-size: 0.72rem;
+    font-family: var(--mono);
+    color: var(--muted);
+    line-height: 1.4;
+  }
+
+  .arch-step-name {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">
+    <div class="logo-icon">🛡</div>
+    DeepShield
+  </div>
+  <span class="nav-tag">v1.0 · EfficientNet-B0</span>
+</nav>
+
+<main>
+  <div class="hero">
+    <h1>Detect <span>Face-Swap</span><br>Deepfakes with AI</h1>
+    <p>Upload an image or video. Our model analyzes facial regions and highlights manipulation artifacts using Grad-CAM explainability.</p>
+  </div>
+
+  <div class="api-notice">
+    <strong>⚠ Demo Mode</strong>
+    This frontend connects to <code>http://localhost:8000</code>. Run the FastAPI backend locally to get real predictions. The UI currently shows simulated results for demonstration.
+  </div>
+
+  <!-- Type selector -->
+  <div class="type-selector">
+    <button class="type-btn active" id="btn-image" onclick="setType('image')">
+      🖼 Image
+    </button>
+    <button class="type-btn" id="btn-video" onclick="setType('video')">
+      🎬 Video
+    </button>
+  </div>
+
+  <!-- Upload zone -->
+  <div class="upload-zone" id="dropzone">
+    <input type="file" id="file-input" accept="image/*" onchange="onFileSelected(event)" />
+    <div class="upload-icon">↑</div>
+    <h3>Drop your file here or click to browse</h3>
+    <p id="upload-hint">Supports JPG, PNG, WebP — max 10MB</p>
+  </div>
+
+  <!-- Preview -->
+  <div class="preview-section" id="preview-section">
+    <img id="image-preview" src="" alt="Preview" style="display:none;" />
+    <video id="video-preview" controls style="display:none;"></video>
+    <p class="file-name-tag" id="file-name"></p>
+  </div>
+
+  <button class="analyze-btn" id="analyze-btn" onclick="runAnalysis()" disabled>
+    <span>⚡</span> ANALYZE FOR DEEPFAKE
+  </button>
+
+  <!-- Loading -->
+  <div class="loading-overlay" id="loading">
+    <div class="spinner"></div>
+    <p class="loading-text" id="loading-msg">Detecting faces...</p>
+  </div>
+
+  <!-- Results -->
+  <div class="results-panel" id="results-panel">
+    <div class="result-header">
+      <div>
+        <div style="font-size:0.72rem;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Analysis Result</div>
+        <div id="verdict-badge" class="verdict-badge REAL">● REAL</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:0.72rem;font-family:var(--mono);color:var(--muted);">Analysis ID</div>
+        <div style="font-family:var(--mono);font-size:0.85rem;color:var(--accent2)" id="analysis-id">—</div>
+      </div>
+    </div>
+
+    <!-- Risk meter -->
+    <div class="risk-meter">
+      <div class="risk-label">
+        <span>Risk Score</span>
+        <span id="risk-score-label" style="font-family:var(--mono);font-weight:600;">0%</span>
+      </div>
+      <div class="risk-bar-bg">
+        <div class="risk-bar-fill" id="risk-bar" style="width: 0%;"></div>
+      </div>
+    </div>
+
+    <!-- Metrics -->
+    <div class="metrics-grid" id="metrics-grid">
+      <!-- populated by JS -->
+    </div>
+
+    <!-- Explanation -->
+    <div class="explanation-box" id="explanation-box">
+      Awaiting analysis...
+    </div>
+
+    <!-- Heatmap -->
+    <div class="heatmap-section">
+      <div class="heatmap-header">Grad-CAM Explainability Heatmap</div>
+      <div id="heatmap-container">
+        <div class="heatmap-placeholder">
+          <span style="font-size:2rem">🔥</span>
+          <span>Heatmap shows manipulation artifact regions</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Frame timeline (video only) -->
+    <div class="timeline" id="timeline" style="display:none;">
+      <h4>Frame-by-Frame Analysis</h4>
+      <div class="frame-bars" id="frame-bars"></div>
+      <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:0.7rem;color:var(--muted);">
+        <span style="color:var(--accent);">■ Real frames</span>
+        <span style="color:var(--danger);">■ Fake frames</span>
+        <span style="color:var(--muted);">■ No face</span>
+      </div>
+    </div>
+
+    <button class="analyze-btn" onclick="resetUI()" style="background: var(--bg3); color: var(--text); background-image: none; box-shadow: none; border: 1px solid var(--border2);">
+      ↩ Analyze Another File
+    </button>
+  </div>
+
+  <!-- Architecture -->
+  <div class="arch-section">
+    <div class="arch-title">How It Works</div>
+    <div class="arch-steps">
+      <div class="arch-step">
+        <div class="arch-step-icon">📁</div>
+        <div class="arch-step-name">Upload</div>
+        <div class="arch-step-label">Image or Video Input</div>
+      </div>
+      <div class="arch-step">
+        <div class="arch-step-icon">👤</div>
+        <div class="arch-step-name">Face Detection</div>
+        <div class="arch-step-label">dlib HOG model</div>
+      </div>
+      <div class="arch-step">
+        <div class="arch-step-icon">✂️</div>
+        <div class="arch-step-name">Crop & Align</div>
+        <div class="arch-step-label">224×224 face region</div>
+      </div>
+      <div class="arch-step">
+        <div class="arch-step-icon">🧠</div>
+        <div class="arch-step-name">EfficientNet-B0</div>
+        <div class="arch-step-label">Binary classification</div>
+      </div>
+      <div class="arch-step">
+        <div class="arch-step-icon">🔥</div>
+        <div class="arch-step-name">Grad-CAM</div>
+        <div class="arch-step-label">Artifact highlighting</div>
+      </div>
+      <div class="arch-step">
+        <div class="arch-step-icon">📊</div>
+        <div class="arch-step-name">Verdict</div>
+        <div class="arch-step-label">Risk score + report</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  let currentType = 'image';
+  let selectedFile = null;
+  const API_BASE = 'http://localhost:8000';
+
+  function setType(type) {
+    currentType = type;
+    document.getElementById('btn-image').classList.toggle('active', type === 'image');
+    document.getElementById('btn-video').classList.toggle('active', type === 'video');
+
+    const input = document.getElementById('file-input');
+    if (type === 'image') {
+      input.accept = 'image/*';
+      document.getElementById('upload-hint').textContent = 'Supports JPG, PNG, WebP — max 10MB';
+    } else {
+      input.accept = 'video/*';
+      document.getElementById('upload-hint').textContent = 'Supports MP4, AVI, MOV — max 100MB';
+    }
+    resetUI();
+  }
+
+  function onFileSelected(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    selectedFile = file;
+
+    const preview = document.getElementById('preview-section');
+    const imgPrev = document.getElementById('image-preview');
+    const vidPrev = document.getElementById('video-preview');
+    document.getElementById('file-name').textContent = file.name;
+    preview.classList.add('visible');
+
+    const url = URL.createObjectURL(file);
+    if (file.type.startsWith('image/')) {
+      imgPrev.src = url;
+      imgPrev.style.display = 'block';
+      vidPrev.style.display = 'none';
+    } else {
+      vidPrev.src = url;
+      vidPrev.style.display = 'block';
+      imgPrev.style.display = 'none';
+    }
+
+    document.getElementById('analyze-btn').disabled = false;
+  }
+
+  const dropzone = document.getElementById('dropzone');
+  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+  dropzone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropzone.classList.remove('drag-over');
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      document.getElementById('file-input').files = files;
+      onFileSelected({ target: { files: files } });
+    }
+  });
+
+  async function runAnalysis() {
+    if (!selectedFile) return;
+
+    document.getElementById('analyze-btn').disabled = true;
+    document.getElementById('results-panel').classList.remove('visible');
+    document.getElementById('loading').classList.add('visible');
+
+    const msgs = [
+      'Detecting faces...',
+      'Cropping facial regions...',
+      'Running EfficientNet-B0...',
+      'Computing Grad-CAM heatmap...',
+      'Generating verdict...'
+    ];
+    let i = 0;
+    const msgEl = document.getElementById('loading-msg');
+    const interval = setInterval(() => {
+      msgEl.textContent = msgs[i % msgs.length];
+      i++;
+    }, 900);
+
+    try {
+      let result;
+      try {
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        const endpoint = currentType === 'image' ? '/analyze/image' : '/analyze/video';
+        const resp = await fetch(API_BASE + endpoint, { method: 'POST', body: formData });
+        if (!resp.ok) throw new Error('API error: ' + resp.status);
+        result = await resp.json();
+      } catch (err) {
+        // Demo fallback when API not running
+        result = generateDemoResult();
+      }
+
+      clearInterval(interval);
+      document.getElementById('loading').classList.remove('visible');
+      displayResults(result);
+
+    } catch (err) {
+      clearInterval(interval);
+      document.getElementById('loading').classList.remove('visible');
+      document.getElementById('analyze-btn').disabled = false;
+      alert('Analysis failed: ' + err.message);
+    }
+  }
+
+  function generateDemoResult() {
+    const isFake = Math.random() > 0.5;
+    const fakeRatio = isFake ? 0.3 + Math.random() * 0.6 : Math.random() * 0.2;
+    const confidence = isFake ? 0.6 + Math.random() * 0.35 : 0.7 + Math.random() * 0.25;
+    const isVideo = currentType === 'video';
+
+    const frameResults = [];
+    if (isVideo) {
+      for (let i = 0; i < 40; i++) {
+        const isFakeFrame = Math.random() < fakeRatio;
+        frameResults.push({
+          frame_idx: i * 10,
+          verdict: isFakeFrame ? 'FAKE' : 'REAL',
+          confidence: 0.5 + Math.random() * 0.45
+        });
+      }
+    }
+
+    return {
+      analysis_id: Math.random().toString(36).substr(2, 8),
+      input_type: currentType,
+      final_verdict: isFake ? 'FAKE' : 'REAL',
+      confidence: parseFloat(confidence.toFixed(4)),
+      risk_score: parseFloat((fakeRatio * 100).toFixed(1)),
+      faces_detected: Math.floor(1 + Math.random() * 3),
+      processing_time_ms: parseFloat((800 + Math.random() * 2000).toFixed(2)),
+      explanation: isFake
+        ? `Strong indicators of face-swap manipulation found. The model detected unnatural blending around facial boundaries and inconsistent skin texture. The highlighted regions in the heatmap show where GAN-based manipulation artifacts were identified. This video/image shows a ${(fakeRatio * 100).toFixed(0)}% fake frame ratio.`
+        : `No significant manipulation artifacts detected (confidence: ${(confidence * 100).toFixed(0)}%). The facial regions appear consistent with authentic footage. Natural skin texture, consistent lighting, and stable facial boundaries were observed throughout the analyzed content.`,
+      heatmap_url: null,
+      total_frames: isVideo ? 480 : undefined,
+      analyzed_frames: isVideo ? 48 : undefined,
+      fake_frame_ratio: isVideo ? parseFloat(fakeRatio.toFixed(4)) : undefined,
+      duration_seconds: isVideo ? parseFloat((16 + Math.random() * 44).toFixed(2)) : undefined,
+      frame_level_results: frameResults
+    };
+  }
+
+  function displayResults(data) {
+    const verdict = data.final_verdict;
+    const isVideo = data.input_type === 'video';
+
+    document.getElementById('analysis-id').textContent = data.analysis_id || '—';
+
+    // Verdict badge
+    const badge = document.getElementById('verdict-badge');
+    badge.className = `verdict-badge ${verdict}`;
+    const icons = { FAKE: '⚠', REAL: '✓', NO_FACE: '?' };
+    badge.textContent = `${icons[verdict] || '?'} ${verdict}`;
+
+    // Risk score animation
+    const risk = data.risk_score || 0;
+    document.getElementById('risk-score-label').textContent = risk.toFixed(1) + '%';
+    setTimeout(() => {
+      document.getElementById('risk-bar').style.width = risk + '%';
+    }, 100);
+
+    // Metrics
+    const metrics = [
+      { label: 'Confidence', value: ((data.confidence || 0) * 100).toFixed(1) + '%', cls: verdict === 'FAKE' ? 'danger' : 'success' },
+      { label: 'Faces Found', value: data.faces_detected || 0, cls: 'info' },
+      { label: 'Processing', value: (data.processing_time_ms || 0).toFixed(0) + 'ms', cls: '' },
+    ];
+    if (isVideo) {
+      metrics.push({ label: 'Fake Frames', value: ((data.fake_frame_ratio || 0) * 100).toFixed(1) + '%', cls: 'warning' });
+      metrics.push({ label: 'Duration', value: (data.duration_seconds || 0).toFixed(1) + 's', cls: '' });
+      metrics.push({ label: 'Analyzed', value: data.analyzed_frames + ' frames', cls: '' });
+    }
+
+    const grid = document.getElementById('metrics-grid');
+    grid.innerHTML = metrics.map(m => `
+      <div class="metric-card">
+        <div class="metric-label">${m.label}</div>
+        <div class="metric-value ${m.cls}">${m.value}</div>
+      </div>
+    `).join('');
+
+    // Explanation
+    document.getElementById('explanation-box').textContent = data.explanation || '';
+
+    // Heatmap
+    const heatmapContainer = document.getElementById('heatmap-container');
+    if (data.heatmap_url) {
+      heatmapContainer.innerHTML = `<img src="${API_BASE + data.heatmap_url}" alt="Grad-CAM heatmap" style="width:100%;display:block;max-height:360px;object-fit:contain;background:#000;" />`;
+    } else {
+      heatmapContainer.innerHTML = `
+        <div class="heatmap-placeholder">
+          <span style="font-size:2rem">🔥</span>
+          <span style="color:var(--muted)">Heatmap available when backend is connected</span>
+          <span style="font-size:0.75rem;color:var(--muted);opacity:0.6">Grad-CAM highlights manipulation artifact regions in red/yellow</span>
+        </div>
+      `;
+    }
+
+    // Frame timeline for video
+    if (isVideo && data.frame_level_results && data.frame_level_results.length > 0) {
+      document.getElementById('timeline').style.display = 'block';
+      const frames = data.frame_level_results;
+      const barsEl = document.getElementById('frame-bars');
+      barsEl.innerHTML = frames.map(f => {
+        const h = 20 + (f.confidence * 40);
+        const cls = f.verdict.toLowerCase();
+        return `<div class="frame-bar ${cls}" style="height:${h}px" title="Frame ${f.frame_idx}: ${f.verdict} (${(f.confidence*100).toFixed(0)}%)"></div>`;
+      }).join('');
+    } else {
+      document.getElementById('timeline').style.display = 'none';
+    }
+
+    document.getElementById('results-panel').classList.add('visible');
+  }
+
+  function resetUI() {
+    selectedFile = null;
+    document.getElementById('file-input').value = '';
+    document.getElementById('preview-section').classList.remove('visible');
+    document.getElementById('results-panel').classList.remove('visible');
+    document.getElementById('loading').classList.remove('visible');
+    document.getElementById('analyze-btn').disabled = true;
+    document.getElementById('image-preview').style.display = 'none';
+    document.getElementById('video-preview').style.display = 'none';
+    document.getElementById('risk-bar').style.width = '0%';
+  }
+</script>
+
+</body>
+</html>
