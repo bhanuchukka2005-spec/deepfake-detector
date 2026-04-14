@@ -1,6 +1,6 @@
 # DeepShield — AI Face-Swap Deepfake Detector
 
-> Detect face-swap deepfakes in images and videos using a pretrained transformer model with spatial heatmap explainability.
+> Detect face-swap deepfakes in images and videos using a pretrained transformer model, OpenCV face detection, and a FastAPI backend with a drag-and-drop frontend.
 
 ---
 
