@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./api:/app/api
+      - ./model:/app/model
+      - ./frontend:/app/frontend
+      - uploads_data:/app/uploads
+      - results_data:/app/results
+    restart: unless-stopped
+
+volumes:
+  uploads_data:
+  results_data:
