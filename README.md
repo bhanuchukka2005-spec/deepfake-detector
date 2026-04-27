@@ -2,7 +2,7 @@
 
 > Detect face-swap deepfakes in images and videos using a pretrained transformer model, OpenCV face detection, and a FastAPI backend with a drag-and-drop frontend.
 
-[![CI](https://github.com/bhanuchukka2005-spec/deepfake-detector/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/bhanuchukka2005-spec/deepfake-detector/actions/workflows/ci.yml)
+[![CI](https://github.com/bhanuchukka2005-spec/deepfake-detector/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bhanuchukka2005-spec/deepfake-detector/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0-EE4C2C?style=flat-square&logo=pytorch)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.104-009688?style=flat-square&logo=fastapi)
