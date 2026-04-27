@@ -42,7 +42,7 @@ jobs:
         run: bandit -r api/ model/ -ll --exit-zero
 
       - name: Dependency audit — Safety
-        run: safety check -r requirements.txt --exit-code 0
+        run: safety check -r requirements.txt --continue-on-error
 
   test:
     name: Tests
